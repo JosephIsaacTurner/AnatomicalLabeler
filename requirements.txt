@@ -2,3 +2,4 @@ tqdm
 pandas
 nibabel
 numpy
+ipykernel

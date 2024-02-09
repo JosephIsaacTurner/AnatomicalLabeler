@@ -2,7 +2,7 @@ import nibabel as nib
 import numpy as np
 import pandas as pd
 import os
-from tqdm.auto import tqdm
+from tqdm import tqdm
 tqdm.pandas() 
 
 # Get the directory in which the current script is located
@@ -447,7 +447,7 @@ class CustomAtlasLabeler:
         self.unique_labels = results_df['atlas_label'].unique().tolist()
         return self
 
-def label_csv_atlas(csv_path, atlas=os.path.join(atlases_dir,"HarvardOxford-cort-maxprob-thr0-2mm.nii.gz"), roi_col_name="orig_roi_vol", min_threshold=1, max_threshold=1):
+def label_csv_atlas(csv_path, roi_col_name="roi_2mm", min_threshold=1, max_threshold=1, atlas=os.path.join(atlases_dir,"HarvardOxford-cort-maxprob-thr0-2mm.nii.gz")):
     """
     Labels a set of Nifti volumes specified in a CSV file or DataFrame using a provided atlas.
 
@@ -488,7 +488,7 @@ def label_csv_atlas(csv_path, atlas=os.path.join(atlases_dir,"HarvardOxford-cort
     df = df.loc[:, (df != 0).any(axis=0)]
     return df
 
-def label_csv_multi_atlas(csv_path, atlases=[os.path.join(atlases_dir,"atlases/HarvardOxford-cort-maxprob-thr0-2mm.nii.gz"), os.path.join(atlases_dir,"atlases/HarvardOxford-sub-maxprob-thr0-2mm.nii.gz")], roi_col_name="orig_roi_vol", min_threshold=1, max_threshold=1):
+def label_csv_multi_atlas(csv_path, roi_col_name="roi_2mm", min_threshold=1, max_threshold=1, atlases=[os.path.join(atlases_dir,"atlases/HarvardOxford-cort-maxprob-thr0-2mm.nii.gz"), os.path.join(atlases_dir,"atlases/HarvardOxford-sub-maxprob-thr0-2mm.nii.gz")]):
     """
     Labels a set of Nifti volumes specified in a CSV file or DataFrame using multiple provided atlases.
 
@@ -529,7 +529,7 @@ def label_csv_multi_atlas(csv_path, atlases=[os.path.join(atlases_dir,"atlases/H
     df = df.loc[:, (df != 0).any(axis=0)]
     return df
 
-def label_csv_custom_atlas(csv_path, atlas=os.path.join(atlases_dir,"joseph_custom_atlas.csv"), roi_col_name="orig_roi_vol", min_threshold=1, max_threshold=1):
+def label_csv_custom_atlas(csv_path, roi_col_name="roi_2mm", min_threshold=1, max_threshold=1, atlas=os.path.join(atlases_dir,"joseph_custom_atlas.csv")):
     """
     Labels a set of Nifti volumes specified in a CSV file using a provided custom atlas.
 
@@ -539,7 +539,7 @@ def label_csv_custom_atlas(csv_path, atlas=os.path.join(atlases_dir,"joseph_cust
 
     Args:
         csv_path (str or DataFrame): Path to the CSV file containing information about the Nifti volumes.
-                        The CSV file is expected to have a column 'orig_roi_vol' containing
+                        The CSV file is expected to have a column 'roi_2mm' containing
                         paths to the Nifti volumes.
                         Alternatively, a DataFrame with the same structure as the CSV file can be provided.
         atlas (CustomAtlas or str): An instance of the CustomAtlas class to be used for labeling the volumes.
