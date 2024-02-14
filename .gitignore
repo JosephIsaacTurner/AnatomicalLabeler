@@ -1,5 +1,6 @@
 local_file_info.csv
 takotsubo_small.csv
+output/
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
