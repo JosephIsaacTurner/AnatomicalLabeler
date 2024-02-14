@@ -1,0 +1,13 @@
+Label,Non-zero Frequency
+subcortex,1.0
+cerebral_cortex,0.8333333333333334
+frontal_lobe,0.5
+temporal_lobe,0.5
+parietal_lobe,0.4166666666666667
+insular_lobe,0.4166666666666667
+hippocampus_and_amygdala,0.25
+brainstem,0.25
+cerebellum,0.25
+occipital_lobe,0.16666666666666666
+basal_ganglia,0.08333333333333333
+thalamus,0.08333333333333333

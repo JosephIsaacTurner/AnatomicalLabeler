@@ -7,9 +7,10 @@ tqdm.pandas()
 
 # Get the directory in which the current script is located
 current_dir = os.path.dirname(__file__)
+parent_dir = os.path.dirname(current_dir)
 
 # Construct the path to the 'atlases' directory
-atlases_dir = os.path.join(current_dir, 'atlases')
+atlases_dir = os.path.join(parent_dir, 'atlas_data')
 
 class Atlas:
     """
@@ -24,6 +25,7 @@ class Atlas:
         key (pd.DataFrame): DataFrame loaded from the CSV file. It maps values in the Nifti file to named regions.
         atlas (nib.Nifti1Image): Nifti image loaded from the Nifti file.
         labels (list): List of region names extracted from the CSV key.
+        roi_size: Size of the region of interest (ROI) in the atlas.
 
     Args:
         filepath (str): Path to the .nii/.nii.gz file of the atlas or to the corresponding .csv file.
@@ -84,6 +86,24 @@ class Atlas:
             return matched_row['name'].tolist()
         else:
             return "No matching region found"
+        
+    def roi_size(self, roi_name):
+        """
+        Returns the size of a region of interest (ROI) in the atlas.
+
+        This method calculates the size of a region of interest (ROI) in the atlas by summing the
+        number of voxels in the Nifti image that correspond to the specified region.
+
+        Args:
+            roi_name (str): The name of the region of interest (ROI) for which to calculate the size.
+
+        Returns:
+            int: The size of the region of interest (ROI) in the atlas.
+        """
+        if roi_name not in self.key['name'].values:
+            return None
+        roi_mask = self.key[self.key['name'] == roi_name]['value'].values[0]
+        return np.sum(self.atlas.get_fdata() == roi_mask)
 
 class AtlasLabeler:
     """
@@ -101,6 +121,8 @@ class AtlasLabeler:
         labeled_data (pd.DataFrame or None): DataFrame containing labeled voxels. Populated after label_volume is called.
         voxel_counts (dict or None): Dictionary of counts of labeled voxels per region. Populated after label_volume is called.
         unique_labels (list or None): List of unique labels assigned. Populated after label_volume is called.
+        proportion_of_volume (dict or None): Proportion of the volume occupied by each label. Populated after label_volume is called.
+        proportion_of_anatomical_label (dict or None): Proportion of each laebl (anatomical region) occupied by the volume. Populated after label_volume is called.
         min_threshold (int): Minimum intensity threshold for considering a voxel in the Nifti volume.
         max_threshold (int): Maximum intensity threshold for considering a voxel in the Nifti volume.
 
@@ -109,6 +131,7 @@ class AtlasLabeler:
         atlas (Atlas or str): An Atlas object or the file path to the atlas (.nii.gz file).
         min_threshold (int, optional): Minimum intensity value to consider for labeling. Defaults to 1.
         max_threshold (int, optional): Maximum intensity value to consider for labeling. Defaults to 1.
+        total_voxel_count (int): Total number of voxels in the volume between the min and max thresholds.
     """
 
     def __init__(self, nifti, atlas=os.path.join(atlases_dir,"HarvardOxford-cort-maxprob-thr0-2mm.nii.gz"), min_threshold=1, max_threshold=1):
@@ -137,12 +160,21 @@ class AtlasLabeler:
                 return
         self.nifti = nifti
         self.volume_data = nifti.get_fdata()
+        self.unique_labels = None
         self.labeled_data = None
         self.voxel_counts = None
-        self.unique_labels = None
+
+        self.proportion_of_volume = None
+        self.proportion_of_anatomical_label = None
+
         self.min_threshold = min_threshold
         self.max_threshold = max_threshold
     
+    @property
+    def total_voxel_count(self):
+        """Returns the total number of voxels in volume between the min and max thresholds."""
+        return np.sum((self.volume_data >= self.min_threshold) & (self.volume_data <= self.max_threshold))
+
     def label_volume(self):
         """
         Labels the Nifti volume using the regions defined in the atlas.
@@ -180,6 +212,9 @@ class AtlasLabeler:
         self.labeled_data = results_df
         self.voxel_counts = results_df['atlas_label'].value_counts().to_dict()
         self.unique_labels = results_df['atlas_label'].unique().tolist()
+
+        self.proportion_of_volume = {label: count / self.total_voxel_count for label, count in self.voxel_counts.items()}
+        self.proportion_of_anatomical_label = {label: count / (self.atlas.roi_size(label) or 1) for label, count in self.voxel_counts.items()}
         return self
 
 class MultiAtlasLabeler:
@@ -193,19 +228,22 @@ class MultiAtlasLabeler:
     Attributes:
         atlas_list (pd.DataFrame): A DataFrame containing paths to atlases and their corresponding loaded Atlas objects.
         labels (list): A list of unique labels across all atlases.
-        nifti_path (str or nib.Nifti1Image): The file path or Nifti image object of the volume to be labeled.
+        nifti_obj (str or nib.Nifti1Image): The file path or Nifti image object of the volume to be labeled.
         voxel_counts (dict or None): Counts of labeled voxels per region after label_volume is called (aggregated across all atlases).
         unique_labels (list or None): Unique labels assigned to the volume after label_volume is called (aggregated across all atlases).
         min_threshold (int): Minimum intensity threshold for considering a voxel in the labeling process.
         max_threshold (int): Maximum intensity threshold for considering a voxel in the labeling process.
+        total_voxel_count (int): Total number of voxels in the volume between the min and max thresholds.
+        proportion_of_volume (dict or None): Proportion of the volume occupied by each label. Populated after label_volume is called.
+        proportion_of_anatomical_label (dict or None): Proportion of each laebl (anatomical region) occupied by the volume. Populated after label_volume is called.
 
     Args:
-        nifti_path (str or nib.Nifti1Image): The file path or Nifti image object of the volume to be labeled.
+        nifti_obj (str or nib.Nifti1Image): The file path or Nifti image object of the volume to be labeled.
         atlas_list (str or list or dict): Path to a CSV file containing atlas paths, a list of atlas paths, or a dictionary with atlas paths. The CSV file or dictionary should have a column or key named 'atlas_path'.
         min_threshold (int, optional): Minimum intensity value to consider for labeling. Defaults to 1.
         max_threshold (int, optional): Maximum intensity value to consider for labeling. Defaults to 1.
     """  
-    def __init__(self, nifti_path, atlas_list=os.path.join(atlases_dir,'harvoxf_atlas_list.csv'), min_threshold=1, max_threshold=1):
+    def __init__(self, nifti_obj, atlas_list=os.path.join(atlases_dir,'harvoxf_atlas_list.csv'), min_threshold=1, max_threshold=1):
         # Store the thresholds
         self.min_threshold = min_threshold
         self.max_threshold = max_threshold
@@ -227,13 +265,13 @@ class MultiAtlasLabeler:
             raise ValueError("Invalid type for atlas_list. Must be a string, list, or dictionary.")
 
         # Load Nifti file
-        if not isinstance(nifti_path, nib.nifti1.Nifti1Image):
+        if not isinstance(nifti_obj, nib.nifti1.Nifti1Image):
             try:
-                self.nifti_path = nib.load(nifti_path)
+                self.nifti_obj = nib.load(nifti_obj)
             except FileNotFoundError:
-                raise FileNotFoundError(f"Could not find nifti {nifti_path}. Make sure the path is correct and try again.")
+                raise FileNotFoundError(f"Could not find nifti {nifti_obj}. Make sure the path is correct and try again.")
         else:
-            self.nifti_path = nifti_path
+            self.nifti_obj = nifti_obj
 
         consolidated_unique_labels = []
         for atlas in atlas_list['atlas']:
@@ -246,6 +284,11 @@ class MultiAtlasLabeler:
         self.voxel_counts = None
         self.unique_labels = None
     
+    @property
+    def total_voxel_count(self):
+        """Returns the total number of voxels in volume between the min and max thresholds."""
+        return np.sum((self.nifti_obj.get_fdata() >= self.min_threshold) & (self.nifti_obj.get_fdata() <= self.max_threshold))
+
     def label_volume(self):
         """
         Labels the Nifti volume using the atlases provided in the atlas list.
@@ -259,21 +302,27 @@ class MultiAtlasLabeler:
             MultiAtlasLabeler: The instance itself with updated voxel_counts and unique_labels.
         """
 
-        def safe_label_volume(nifti_path, atlas, min_threshold, max_threshold):
+        def safe_label_volume(nifti_obj, atlas, min_threshold, max_threshold):
             try:
-                labeler = AtlasLabeler(nifti_path, atlas, min_threshold, max_threshold)
+                labeler = AtlasLabeler(nifti_obj, atlas, min_threshold, max_threshold)
                 labeler.label_volume()
                 return labeler
             except Exception as e:
                 print(f"Error processing {atlas}: {e}")
                 return None
+            
+        def find_roi_size(label):
+            for _, row in self.atlas_list.iterrows():
+                if label in row['atlas'].labels:
+                    return row['atlas'].roi_size(label)
+            return None
 
         # List to hold the results for each atlas
         results_list = []
 
         # Iterate through the atlas list and label the volume for each atlas
         for _, row in self.atlas_list.iterrows():
-            labeler = safe_label_volume(self.nifti_path, row['atlas'], self.min_threshold, self.max_threshold)
+            labeler = safe_label_volume(self.nifti_obj, row['atlas'], self.min_threshold, self.max_threshold)
             if labeler and labeler.labeled_data is not None:
                 voxel_counts = labeler.voxel_counts
                 unique_labels = labeler.unique_labels
@@ -297,6 +346,9 @@ class MultiAtlasLabeler:
             print("No valid results were generated from the atlases.")
             self.voxel_counts = {}
             self.unique_labels = []
+
+        self.proportion_of_volume = {label: count / self.total_voxel_count for label, count in self.voxel_counts.items()}
+        self.proportion_of_anatomical_label = {label: count / (find_roi_size(label) or 1) for label, count in self.voxel_counts.items()}
 
         return self
 
@@ -351,6 +403,18 @@ class CustomAtlas:
         else:
             return region_names
 
+    def roi_size(self, roi_name):
+        """Returns the size of a region of interest (ROI) in the atlas.
+        Args:
+            roi_name (str): The name of the region of interest (ROI) for which to calculate the size.
+        Returns:
+            int: The size of the region of interest (ROI) in the atlas."""
+        if roi_name not in self.atlas_df['region_name'].values:
+            return None
+        mask_path = self.atlas_df[self.atlas_df['region_name'] == roi_name]['mask_path'].values[0]
+        mask_volume = nib.load(mask_path).get_fdata()
+        return np.sum(mask_volume > 0)
+    
 class CustomAtlasLabeler:
     """
     A class for labeling Nifti volumes based on predefined regions from an atlas.
@@ -363,43 +427,51 @@ class CustomAtlasLabeler:
         atlas (CustomAtlas): An instance of the CustomAtlas class.
         labels (list): List of region names from the atlas.
         atlas_df (pd.DataFrame): DataFrame representing the atlas, with region names and mask paths.
-        nifti (nib.Nifti1Image): The Nifti image to be labeled.
-        volume_data (numpy.ndarray): Data from the Nifti image.
-        min_threshold (int): Minimum intensity threshold for considering a voxel in the Nifti volume.
-        max_threshold (int): Maximum intensity threshold for considering a voxel in the Nifti volume.
+        nifti_obj(nib.Nifti1Image): The nifti_objimage to be labeled.
+        volume_data (numpy.ndarray): Data from the nifti_objimage.
+        min_threshold (int): Minimum intensity threshold for considering a voxel in the nifti_objvolume.
+        max_threshold (int): Maximum intensity threshold for considering a voxel in the nifti_objvolume.
         labeled_data (pd.DataFrame or None): DataFrame containing labeled voxels after label_volume is called.
         voxel_counts (dict or None): Dictionary containing counts of labeled voxels per region after label_volume is called.
         unique_labels (list or None): List of unique labels assigned after label_volume is called.
+        total_voxel_count (int): Total number of voxels in the volume between the min and max thresholds.
 
     Args:
-        nifti_path (str or nib.Nifti1Image): File path to the Nifti volume or a Nifti image object.
+        nifti_obj (str or nib.Nifti1Image): File path to the nifti_obj volume or a nifti_obj image object.
         atlas (CustomAtlas or str (path to atlas)): An instance of CustomAtlas or a file path to an atlas CSV file.
         min_threshold (int, optional): Minimum intensity value to consider for labeling. Default is 1.
         max_threshold (int, optional): Maximum intensity value to consider for labeling. Default is 1.
     """
 
-    def __init__(self, nifti_path, atlas=os.path.join(atlases_dir, "joseph_custom_atlas.csv"), min_threshold=1, max_threshold=1):
+    def __init__(self, nifti_obj, atlas=os.path.join(atlases_dir, "joseph_custom_atlas.csv"), min_threshold=1, max_threshold=1):
         
         if not isinstance(atlas, CustomAtlas):
             atlas = CustomAtlas(atlas)
         
-        if not isinstance(nifti_path, nib.nifti1.Nifti1Image):
+        if not isinstance(nifti_obj, nib.nifti1.Nifti1Image):
             try:
-                nifti = nib.load(nifti_path)
+                nifti_obj = nib.load(nifti_obj)
             except FileNotFoundError:
-                raise FileNotFoundError(f"Could not find nifti {nifti_path}. Make sure the path is correct and try again.")
+                raise FileNotFoundError(f"Could not find nifti_obj {nifti_obj}. Make sure the path is correct and try again.")
 
         self.atlas = atlas
         self.labels = self.atlas.labels
         self.atlas_df = atlas.atlas_df
-        self.nifti = nifti
-        self.volume_data = nifti.get_fdata()
+        self.nifti_obj = nifti_obj
+        self.volume_data = nifti_obj.get_fdata()
         self.min_threshold = min_threshold
         self.max_threshold = max_threshold
         self.labeled_data = None
         self.voxel_counts = None
         self.unique_labels = None 
+        self.proportion_of_volume = None
+        self.proportion_of_anatomical_label = None
     
+    @property
+    def total_voxel_count(self):
+        """Returns the total number of voxels in volume between the min and max thresholds."""
+        return np.sum((self.volume_data >= self.min_threshold) & (self.volume_data <= self.max_threshold))
+
     def label_volume(self):
         """
         Labels the Nifti volume using the regions defined in the atlas.
@@ -445,9 +517,39 @@ class CustomAtlasLabeler:
         self.labeled_data = results_df
         self.voxel_counts = results_df['atlas_label'].value_counts().to_dict()
         self.unique_labels = results_df['atlas_label'].unique().tolist()
+
+        self.proportion_of_volume = {label: count / self.total_voxel_count for label, count in self.voxel_counts.items()}
+        self.proportion_of_anatomical_label = {label: count / (self.atlas.roi_size(label) or 1) for label, count in self.voxel_counts.items()}
+
         return self
 
-def label_csv_atlas(csv_path, roi_col_name="roi_2mm", min_threshold=1, max_threshold=1, atlas=os.path.join(atlases_dir,"HarvardOxford-cort-maxprob-thr0-2mm.nii.gz")):
+def determine_predominant_label(row, col_name_option):
+    attribute_value = getattr(row['labeling_results'], col_name_option)
+    
+    # Filter out 'No matching region found' from the dictionary
+    filtered_attribute_value = {k: v for k, v in attribute_value.items() if k not in ['No matching region found', 'cerebral_cortex', 'subcortex']}
+    
+    # Check if filtered_attribute_value is not empty to avoid ValueError from max()
+    if filtered_attribute_value:
+        # Find the label with the maximum value from the filtered dictionary
+        predominant_label = max(filtered_attribute_value.items(), key=lambda x: x[1])[0]
+    
+    else:
+        predominant_label = 'No matching region found'
+    
+    return predominant_label
+
+def add_predominant_label(df, col_name_option='voxel_counts'):
+    df['predominant_label'] = df.apply(determine_predominant_label, col_name_option=col_name_option, axis=1)
+    return df
+
+def label_csv_atlas(csv_path, 
+                    roi_col_name="roi_2mm", 
+                    min_threshold=1, 
+                    max_threshold=1, 
+                    proportion_of_volume=False,
+                    proportion_of_anatomical_label=False,
+                    atlas=os.path.join(atlases_dir,"HarvardOxford-cort-maxprob-thr0-2mm.nii.gz")):
     """
     Labels a set of Nifti volumes specified in a CSV file or DataFrame using a provided atlas.
 
@@ -459,12 +561,15 @@ def label_csv_atlas(csv_path, roi_col_name="roi_2mm", min_threshold=1, max_thres
         csv_path (str or DataFrame): Path to the CSV file or a DataFrame containing information about the Nifti volumes.
                                      The CSV file or DataFrame is expected to have a column 'orig_roi_vol' containing
                                      paths to the Nifti volumes.
-        atlas (Atlas or str): An instance of the Atlas class or a string path to the atlas file (.nii, .nii.gz, or .csv)
-                              to be used for labeling the volumes.
         roi_col_name (str, optional): Name of the column in the CSV file containing the paths to the Nifti volumes.
                                         Defaults to "orig_roi_vol".
         min_threshold (int, optional): Minimum intensity value to consider for labeling. Defaults to 1.
         max_threshold (int, optional): Maximum intensity value to consider for labeling. Defaults to 1.
+        proportion_of_volume (bool, optional): Whether to calculate the proportion of the volume occupied by each label.
+                        Defaults to False.
+        proportion_of_anatomical_label (bool, optional): Whether to calculate the proportion of each label (anatomical region)
+        atlas (Atlas or str): An instance of the Atlas class or a string path to the atlas file (.nii, .nii.gz, or .csv)
+                              to be used for labeling the volumes.
     
     Returns:
         pd.DataFrame: A DataFrame with the original data from the CSV file or DataFrame, augmented with voxel counts for
@@ -478,17 +583,36 @@ def label_csv_atlas(csv_path, roi_col_name="roi_2mm", min_threshold=1, max_thres
     else:
         raise ValueError(f"csv_path must be a string or a DataFrame. {type(csv_path)} was provided.")
     df['labeling_results'] = df[roi_col_name].progress_apply(lambda x: AtlasLabeler(x, atlas, min_threshold, max_threshold).label_volume())
-    df['voxel_counts'] = df['labeling_results'].apply(lambda x: x.voxel_counts)
+    df['total_voxel_count'] = df['labeling_results'].apply(lambda x: x.total_voxel_count)
+    
+    if proportion_of_volume:
+        col_name = 'proportion_of_volume'
+        df[col_name] = df['labeling_results'].apply(lambda x: x.proportion_of_volume)
+    elif proportion_of_anatomical_label:
+        col_name = 'proportion_of_anatomical_label'
+        df[col_name] = df['labeling_results'].apply(lambda x: x.proportion_of_anatomical_label)
+    else:
+        col_name = 'voxel_counts'
+        df[col_name] = df['labeling_results'].apply(lambda x: x.voxel_counts)
+    
+    df = add_predominant_label(df)
+
     labels = df['labeling_results'].iloc[0].labels
     for label in labels:
-        df[label] = df['voxel_counts'].apply(lambda x: x.get(label, 0))
-    df.drop(columns=['voxel_counts', 'labeling_results'], inplace=True)
+        df[label] = df[col_name].apply(lambda x: x.get(label, 0))
+    df.drop(columns=[col_name, 'labeling_results'], inplace=True)
 
     # Drop columns where the entire column's values are 0
     df = df.loc[:, (df != 0).any(axis=0)]
     return df
 
-def label_csv_multi_atlas(csv_path, roi_col_name="roi_2mm", min_threshold=1, max_threshold=1, atlases=[os.path.join(atlases_dir,"atlases/HarvardOxford-cort-maxprob-thr0-2mm.nii.gz"), os.path.join(atlases_dir,"atlases/HarvardOxford-sub-maxprob-thr0-2mm.nii.gz")]):
+def label_csv_multi_atlas(csv_path, 
+                          roi_col_name="roi_2mm", 
+                          min_threshold=1, 
+                          max_threshold=1, 
+                          proportion_of_volume=False,
+                          proportion_of_anatomical_label=False,
+                          atlas=[os.path.join(atlases_dir,"HarvardOxford-cort-maxprob-thr0-2mm.nii.gz"), os.path.join(atlases_dir,"HarvardOxford-sub-maxprob-thr0-2mm.nii.gz")]):
     """
     Labels a set of Nifti volumes specified in a CSV file or DataFrame using multiple provided atlases.
 
@@ -500,12 +624,15 @@ def label_csv_multi_atlas(csv_path, roi_col_name="roi_2mm", min_threshold=1, max
         csv_path (str or DataFrame): Path to the CSV file or a DataFrame containing information about the Nifti volumes.
                                      The CSV file or DataFrame is expected to have a column 'orig_roi_vol' containing
                                      paths to the Nifti volumes.
-        atlases (list of Atlas or str): A list of Atlas instances or string paths to atlas files (.nii, .nii.gz, or .csv)
-                                        to be used for labeling the volumes.
         roi_col_name (str, optional): Name of the column in the CSV file containing the paths to the Nifti volumes.
                                         Defaults to "orig_roi_vol".
         min_threshold (int, optional): Minimum intensity value to consider for labeling. Defaults to 1.
         max_threshold (int, optional): Maximum intensity value to consider for labeling. Defaults to 1.
+        proportion_of_volume (bool, optional): Whether to calculate the proportion of the volume occupied by each label.
+                        Defaults to False.
+        proportion_of_anatomical_label (bool, optional): Whether to calculate the proportion of each label (anatomical region)
+        atlas (list of Atlas or str): A list of Atlas instances or string paths to atlas files (.nii, .nii.gz, or .csv)
+                                        to be used for labeling the volumes.
     
     Returns:
         pd.DataFrame: A DataFrame with the original data from the CSV file or DataFrame, augmented with voxel counts for
@@ -518,18 +645,38 @@ def label_csv_multi_atlas(csv_path, roi_col_name="roi_2mm", min_threshold=1, max
         df = csv_path
     else:
         raise ValueError(f"csv_path must be a string or a DataFrame. {type(csv_path)} was provided.")
-    df['labeling_results'] = df[roi_col_name].progress_apply(lambda x: MultiAtlasLabeler(x, atlases, min_threshold, max_threshold).label_volume())
-    df['voxel_counts'] = df['labeling_results'].apply(lambda x: x.voxel_counts)
+    df['labeling_results'] = df[roi_col_name].progress_apply(lambda x: MultiAtlasLabeler(x, atlas_list=atlas, min_threshold=min_threshold, max_threshold=max_threshold).label_volume())
+    df['total_voxel_count'] = df['labeling_results'].apply(lambda x: x.total_voxel_count)
+
+    if proportion_of_volume:
+        col_name = 'proportion_of_volume'
+        df[col_name] = df['labeling_results'].apply(lambda x: x.proportion_of_volume)
+    elif proportion_of_anatomical_label:
+        col_name = 'proportion_of_anatomical_label'
+        df[col_name] = df['labeling_results'].apply(lambda x: x.proportion_of_anatomical_label)
+    else:
+        col_name = 'voxel_counts'
+        df[col_name] = df['labeling_results'].apply(lambda x: x.voxel_counts)
+    
+    df = add_predominant_label(df)
+
     labels = df['labeling_results'].iloc[0].labels
+    
     for label in labels:
-        df[label] = df['voxel_counts'].apply(lambda x: x.get(label, 0))
-    df.drop(columns=['voxel_counts', 'labeling_results'], inplace=True)
+        df[label] = df[col_name].apply(lambda x: x.get(label, 0))
+    df.drop(columns=[col_name, 'labeling_results'], inplace=True)
     
     # Drop columns where the entire column's values are 0
     df = df.loc[:, (df != 0).any(axis=0)]
     return df
 
-def label_csv_custom_atlas(csv_path, roi_col_name="roi_2mm", min_threshold=1, max_threshold=1, atlas=os.path.join(atlases_dir,"joseph_custom_atlas.csv")):
+def label_csv_custom_atlas(csv_path, 
+                           roi_col_name="roi_2mm", 
+                           min_threshold=1, 
+                           max_threshold=1, 
+                           proportion_of_volume=False,
+                           proportion_of_anatomical_label=False,
+                           atlas=os.path.join(atlases_dir,"joseph_custom_atlas.csv")):
     """
     Labels a set of Nifti volumes specified in a CSV file using a provided custom atlas.
 
@@ -542,13 +689,16 @@ def label_csv_custom_atlas(csv_path, roi_col_name="roi_2mm", min_threshold=1, ma
                         The CSV file is expected to have a column 'roi_2mm' containing
                         paths to the Nifti volumes.
                         Alternatively, a DataFrame with the same structure as the CSV file can be provided.
-        atlas (CustomAtlas or str): An instance of the CustomAtlas class to be used for labeling the volumes.
-                        Alternatively, a string path to the csv file of the custom atlas can be provided.
-                        This should be a CSV file with columns 'region_name' and 'mask_path'.
         roi_col_name (str, optional): Name of the column in the CSV file containing the paths to the Nifti volumes.
                         Defaults to "orig_roi_vol".
         min_threshold (int, optional): Minimum intensity value to consider for labeling. Defaults to 1.
         max_threshold (int, optional): Maximum intensity value to consider for labeling. Defaults to 1.
+        proportion_of_volume (bool, optional): Whether to calculate the proportion of the volume occupied by each label.
+                        Defaults to False.
+        proportion_of_anatomical_label (bool, optional): Whether to calculate the proportion of each label (anatomical region)
+        atlas (CustomAtlas or str): An instance of the CustomAtlas class to be used for labeling the volumes.
+                        Alternatively, a string path to the csv file of the custom atlas can be provided.
+                        This should be a CSV file with columns 'region_name' and 'mask_path'.
     
     Returns:
         pd.DataFrame: A DataFrame with the original data from the CSV file, augmented with 
@@ -561,11 +711,146 @@ def label_csv_custom_atlas(csv_path, roi_col_name="roi_2mm", min_threshold=1, ma
     else:
         raise ValueError(f"csv_path must be a string or a DataFrame. {type(csv_path)} was provided.")
     df['labeling_results'] = df[roi_col_name].progress_apply(lambda x: CustomAtlasLabeler(x, atlas, min_threshold, max_threshold).label_volume())
-    df['voxel_counts'] = df['labeling_results'].apply(lambda x: x.voxel_counts)
+    df['total_voxel_count'] = df['labeling_results'].apply(lambda x: x.total_voxel_count)
+    
+    if proportion_of_volume:
+        col_name = 'proportion_of_volume'
+        df[col_name] = df['labeling_results'].apply(lambda x: x.proportion_of_volume)
+    elif proportion_of_anatomical_label:
+        col_name = 'proportion_of_anatomical_label'
+        df[col_name] = df['labeling_results'].apply(lambda x: x.proportion_of_anatomical_label)
+    else:
+        col_name = 'voxel_counts'
+        df[col_name] = df['labeling_results'].apply(lambda x: x.voxel_counts)
+
+    df = add_predominant_label(df)
+
     labels = df['labeling_results'].iloc[0].labels
     for label in labels:
-        df[label] = df['voxel_counts'].apply(lambda x: x.get(label, 0))
-    df.drop(columns=['voxel_counts', 'labeling_results'], inplace=True)
+        df[label] = df[col_name].apply(lambda x: x.get(label, 0))
+    df.drop(columns=[col_name, 'labeling_results'], inplace=True)
     # Drop columns where the entire column's values are 0
     df = df.loc[:, (df != 0).any(axis=0)]
     return df
+
+def quantification_from_csv( csv_path, 
+                               roi_col_name='roi_2mm', 
+                               label_function=label_csv_custom_atlas, 
+                               proportion_of_anatomical_label=True,
+                               proportion_of_volume=False,
+                               min_threshold=1.0, 
+                               max_threshold=1.0,
+                               atlas=None
+                               ):
+    """
+    Function takes a CSV file of NIfTI filepaths and quantifies the volume occupied by anatomical labels in an atlas.
+
+    Args:
+        - csv_path (str): The file path to the CSV file containing the NIfTI filepaths. Required.
+        - roi_col_name (str): The column name of the NIfTI filepaths to label. Defaults to "roi_2mm".
+        - label_function (function): The function to use for labeling the volumes. Defaults to label_csv_custom_atlas (using my custom atlas).
+        - proportion_of_anatomical_label (bool): If True, the proportion of each label occupied by the volume is calculated. Defaults to True.
+        - proportion_of_volume (bool): If True, the proportion of the volume occupied by each label is instead calculated. Defaults to False.
+        - min_threshold (float): The minimum threshold for the proportion of the volume occupied by each label. Defaults to 1.0.
+        - max_threshold (float): The maximum threshold for the proportion of the volume occupied by each label. Defaults to 1.0.
+        - atlas (str): The file path to the atlas CSV file. If not provided, defaults to whatever is specified in the label_function.
+    
+    Returns:
+        - labeled_df (DataFrame): The original DataFrame with the labeled volumes and their statistics.
+        - stats_df (DataFrame): The statistics of the labeled volumes.
+        - non_zero_frequency_df (DataFrame): The frequency of non-zero values for each label.
+        - predominant_frequency_df (DataFrame): The frequency of predominant values for each label.
+
+    """
+    
+    if proportion_of_anatomical_label:
+        proportion_of_volume = False
+    
+    if atlas:
+        labeled_df = label_function(csv_path=csv_path, 
+                                    roi_col_name=roi_col_name, 
+                                    min_threshold=min_threshold, 
+                                    max_threshold=max_threshold,
+                                    atlas=atlas, 
+                                    proportion_of_anatomical_label=proportion_of_anatomical_label,
+                                    proportion_of_volume=proportion_of_volume
+                                    )
+    else:
+        labeled_df = label_function(csv_path=csv_path, 
+                                    roi_col_name=roi_col_name, 
+                                    min_threshold=min_threshold, 
+                                    max_threshold=max_threshold,
+                                    proportion_of_anatomical_label=proportion_of_anatomical_label,
+                                    proportion_of_volume=proportion_of_volume
+                                    )
+    
+    # Read the original CSV to identify new columns in labeled_df
+    original_csv = pd.read_csv(csv_path)
+
+    # Identify the new label columns in labeled_df not present in original_csv
+    new_label_columns = [col for col in labeled_df.columns if col not in original_csv.columns and col != 'total_voxel_count' and col != 'predominant_label']
+
+    # Initialize a list to hold the median and 25-75th percentile data
+    label_stats = []
+
+    # Iterate over the new label columns to calculate the statistics
+    for label in new_label_columns:
+        median = labeled_df[label].median()
+        percentile_25 = labeled_df[label].quantile(0.25)
+        percentile_75 = labeled_df[label].quantile(0.75)
+        std_dev = labeled_df[label].std()  # Standard deviation
+        mean = labeled_df[label].mean()     # Mean
+        min_val = labeled_df[label].min()   # Minimum
+        max_val = labeled_df[label].max()   # Maximum
+            
+        # Append the statistics for this label to the list
+        label_stats.append({
+            'Label': label,
+            'Median': median,
+            '25th Percentile': percentile_25,
+            '75th Percentile': percentile_75,
+            'Standard Deviation': std_dev,
+            'Mean': mean,
+            'Min': min_val,
+            'Max': max_val
+        })
+
+    # Convert the list of dictionaries into a DataFrame
+    stats_df = pd.DataFrame(label_stats).sort_values(by='Median', ascending=False)
+
+
+    # Initialize a list to hold the label and its non-zero frequency
+    non_zero_label_frequencies = []
+
+    # Iterate over the new label columns to calculate the frequency of non-zero values
+    for label in new_label_columns:
+        non_zero_count = (labeled_df[label] > 0).sum()  # Count non-zero entries for each label
+        
+        # Append the frequency data for this label to the list
+        non_zero_label_frequencies.append({
+            'Label': label,
+            'Non-zero Frequency': non_zero_count/len(labeled_df)  # Calculate the frequency of non-zero values
+        })
+
+    # Convert the list of dictionaries into a DataFrame
+    non_zero_frequency_df = pd.DataFrame(non_zero_label_frequencies).sort_values(by='Non-zero Frequency', ascending=False)
+
+    # Initialize a list to hold the label and its non-zero frequency
+    predominant_label_frequencies = []
+
+    # Iterate over the new label columns to calculate the frequency of non-zero values
+    for label in new_label_columns:
+        predominant_count = (label == labeled_df['predominant_label']).sum()  # Count predominant entries for each label
+
+        # Append the frequency data for this label to the list
+        predominant_label_frequencies.append({
+            'Label': label,
+            'Predominant Frequency': predominant_count/len(labeled_df)  # Calculate the frequency of non-zero values
+        })
+
+    # Convert the list of dictionaries into a DataFrame
+    predominant_frequency_df = pd.DataFrame(predominant_label_frequencies)
+    predominant_frequency_df = predominant_frequency_df[~predominant_frequency_df['Label'].isin(['cerebral_cortex', 'subcortex'])].sort_values(by='Predominant Frequency', ascending=False)
+
+    # Return the stats DataFrame
+    return labeled_df, stats_df, non_zero_frequency_df, predominant_frequency_df
